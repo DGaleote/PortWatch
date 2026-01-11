@@ -53,14 +53,16 @@ public final class SnapshotComparator {
     }
 
     private static boolean isChanged(ListeningSocket before, ListeningSocket after) {
-        if (before.ProcessId != after.ProcessId) return true;
+        if (!Objects.equals(before.ProcessId, after.ProcessId)) return true;
         if (!Objects.equals(before.ProcessName, after.ProcessName)) return true;
         return !Objects.equals(before.Path, after.Path);
     }
+
 
     private static int byKey(ListeningSocket x, ListeningSocket y) {
         return keyOf(x).toString().compareTo(keyOf(y).toString());
     }
 
-    private SnapshotComparator() {}
+    private SnapshotComparator() {
+    }
 }

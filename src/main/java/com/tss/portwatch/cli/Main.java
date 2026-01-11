@@ -1,6 +1,7 @@
 package com.tss.portwatch.cli;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tss.portwatch.core.collector.LinuxSsCollector;
 import com.tss.portwatch.core.collector.ListenerCollector;
 import com.tss.portwatch.core.collector.WindowsPowerShellCollector;
 import com.tss.portwatch.core.diff.SnapshotComparator;
@@ -22,6 +23,7 @@ public class Main {
 
         ListenerCollector collector = switch (os) {
             case WINDOWS -> new WindowsPowerShellCollector();
+            case LINUX -> new LinuxSsCollector();
             default -> throw new IllegalStateException("Unsupported OS for now: " + os);
         };
 
