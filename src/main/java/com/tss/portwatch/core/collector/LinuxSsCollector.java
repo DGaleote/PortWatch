@@ -17,6 +17,8 @@ public class LinuxSsCollector implements ListenerCollector {
     private static final Pattern USERS_PATTERN =
             Pattern.compile("users:\\(\\(\"(?<name>[^\"]+)\",pid=(?<pid>\\d+),fd=\\d+\\)\\)");
 
+    private static final ObjectMapper OM = new ObjectMapper();
+
     @Override
     public String collectTcpListenersJson() throws Exception {
         // -l listening, -n numeric, -t tcp, -p process (capado sin permisos), -H sin header
@@ -31,12 +33,10 @@ public class LinuxSsCollector implements ListenerCollector {
 
         List<ListeningSocket> rows = parseSsOutput(result.stdout());
 
-        ObjectMapper om = new ObjectMapper();
-        return om.writeValueAsString(rows);
+        return OM.writeValueAsString(rows);
     }
 
     private List<ListeningSocket> parseSsOutput(String stdout) {
-        System.out.println(stdout);
 
         List<ListeningSocket> out = new ArrayList<>();
         if (stdout == null || stdout.isBlank()) return out;
@@ -103,6 +103,8 @@ public class LinuxSsCollector implements ListenerCollector {
         if (idx <= 0 || idx >= s.length() - 1) return null;
 
         String host = s.substring(0, idx);
+        if ("*".equals(host)) host = "0.0.0.0";
+
         String portStr = s.substring(idx + 1);
 
         // host puede venir con %lo (scope). Lo dejamos tal cual para trazabilidad.
@@ -128,15 +130,5 @@ public class LinuxSsCollector implements ListenerCollector {
         int port;
     }
 
-    // Estructura de salida: adáptala si ya tienes un modelo equivalente.
-    // La clave es que esto sea "parlable" con tu SnapshotIO/Diff.
-//    public static class TcpListenerRow {
-//        public String localAddress;
-//        public Integer localPort;
-//
-//        public Integer processId;
-//        public String processName;
-//
-//        public String path;
-//    }
+
 }

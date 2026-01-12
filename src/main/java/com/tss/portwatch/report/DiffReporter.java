@@ -9,11 +9,29 @@ public final class DiffReporter {
         // utility class
     }
 
+//    public static void printConsole(SnapshotDiff diff, int limitPerSection) {
+//        printAdded(diff, limitPerSection);
+//        printRemoved(diff, limitPerSection);
+//        printChanged(diff, limitPerSection);
+//    }
+
     public static void printConsole(SnapshotDiff diff, int limitPerSection) {
-        printAdded(diff, limitPerSection);
-        printRemoved(diff, limitPerSection);
-        printChanged(diff, limitPerSection);
+        if (!diff.added().isEmpty()) {
+            System.out.println("\n=== ADDED ===");
+            printAdded(diff, limitPerSection);
+        }
+
+        if (!diff.removed().isEmpty()) {
+            System.out.println("\n=== REMOVED ===");
+            printRemoved(diff, limitPerSection);
+        }
+
+        if (!diff.changed().isEmpty()) {
+            System.out.println("\n=== CHANGED ===");
+            printChanged(diff, limitPerSection);
+        }
     }
+
 
     private static void printAdded(SnapshotDiff diff, int limit) {
         int shown = 0;
@@ -45,6 +63,27 @@ public final class DiffReporter {
         }
     }
 
+//    private static void printChanged(SnapshotDiff diff, int limit) {
+//        int shown = 0;
+//
+//        for (SnapshotDiff.Changed c : diff.changed()) {
+//            ListeningSocket before = c.before();
+//            ListeningSocket after = c.after();
+//
+//            System.out.println("[*] CHANGED " + after.LocalAddress + ":" + after.LocalPort
+//                    + " -> " + safe(before.ProcessName) + " (PID " + before.ProcessId + ")"
+//                    + " => " + safe(after.ProcessName) + " (PID " + after.ProcessId + ")");
+//
+//            shown++;
+//            if (shown >= limit) break;
+//        }
+//
+//        int remaining = diff.changed().size() - shown;
+//        if (remaining > 0) {
+//            System.out.println("    ... (" + remaining + " more changed)");
+//        }
+//    }
+
     private static void printChanged(SnapshotDiff diff, int limit) {
         int shown = 0;
 
@@ -52,8 +91,8 @@ public final class DiffReporter {
             ListeningSocket before = c.before();
             ListeningSocket after = c.after();
 
-            System.out.println("[*] CHANGED " + after.LocalAddress + ":" + after.LocalPort
-                    + " -> " + safe(before.ProcessName) + " (PID " + before.ProcessId + ")"
+            System.out.println("[*] CHANGED " + safe(after.LocalAddress) + ":" + after.LocalPort
+                    + " " + safe(before.ProcessName) + " (PID " + before.ProcessId + ")"
                     + " => " + safe(after.ProcessName) + " (PID " + after.ProcessId + ")");
 
             shown++;
@@ -65,6 +104,7 @@ public final class DiffReporter {
             System.out.println("    ... (" + remaining + " more changed)");
         }
     }
+
 
     private static String formatSocket(ListeningSocket s) {
         String addrPort = safe(s.LocalAddress) + ":" + s.LocalPort;

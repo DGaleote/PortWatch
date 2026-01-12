@@ -9,23 +9,25 @@ public class WindowsPowerShellCollector implements ListenerCollector {
     @Override
     public String collectTcpListenersJson() throws Exception {
         String ps = """
-$ErrorActionPreference='Stop';
-
-Get-NetTCPConnection -State Listen |
-ForEach-Object {
-  $procId = $_.OwningProcess
-  $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue
-
-  [PSCustomObject]@{
-    LocalAddress   = $_.LocalAddress
-    LocalPort      = $_.LocalPort
-    ProcessId      = $procId
-    ProcessName    = $proc.Name
-    Path           = $proc.ExecutablePath
-  }
-} | ConvertTo-Json -Depth 3
-
+                $ErrorActionPreference='Stop';
+                
+                @(
+                  Get-NetTCPConnection -State Listen |
+                  ForEach-Object {
+                    $procId = $_.OwningProcess
+                    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue
+                
+                    [PSCustomObject]@{
+                      LocalAddress   = $_.LocalAddress
+                      LocalPort      = $_.LocalPort
+                      ProcessId      = $procId
+                      ProcessName    = $proc.Name
+                      Path           = $proc.ExecutablePath
+                    }
+                  }
+                ) | ConvertTo-Json -Depth 3
                 """;
+
 
         var result = CommandRunner.run(List.of(
                 "powershell.exe",
