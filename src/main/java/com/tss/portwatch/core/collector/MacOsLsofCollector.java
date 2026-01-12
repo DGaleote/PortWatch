@@ -50,7 +50,19 @@ public class MacOsLsofCollector implements ListenerCollector {
             String command = parts[0];
             Integer pid = safeParseInt(parts[1]);
 
-            String name = parts[parts.length - 1];
+//            String name = parts[parts.length - 1];
+
+
+            // NAME son los últimos tokens. Normalmente acaba con "(LISTEN)" separado.
+// Reconstruimos NAME tomando el token previo a "(LISTEN)" (y soportamos casos raros).
+            String name;
+            if ("(LISTEN)".equals(parts[parts.length - 1])) {
+                name = parts[parts.length - 2];
+            } else {
+                name = parts[parts.length - 1];
+            }
+
+
 
             // NAME puede venir como:
             // TCP *:631 (LISTEN)
