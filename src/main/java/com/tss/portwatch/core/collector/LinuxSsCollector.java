@@ -9,22 +9,48 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Linux implementation of ListenerCollector.
+ *
+ * Uses the native 'ss' tool to list TCP listening sockets:
+ *   ss -lntpHn
+ *
+ * Where:
+ *  -l : listening sockets
+ *  -n : numeric addresses and ports
+ *  -t : TCP only
+ *  -p : process info (may be restricted without root)
+ *  -H : no header
+ */
 public class LinuxSsCollector implements ListenerCollector {
 
-    // Ejemplo ss:
-    // LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:* users:(("systemd-resolve",pid=725,fd=13))
-    // LISTEN 0 4096 [::1]:631 [::]:* users:(("cupsd",pid=1234,fd=7))
+    /**
+     * Example ss output lines:
+     *
+     * LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:* users:(("systemd-resolve",pid=725,fd=13))
+     * LISTEN 0 4096 [::1]:631 [::]:* users:(("cupsd",pid=1234,fd=7))
+     *
+     * This regex extracts process name and pid from the "users:(())" block.
+     */
     private static final Pattern USERS_PATTERN =
             Pattern.compile("users:\\(\\(\"(?<name>[^\"]+)\",pid=(?<pid>\\d+),fd=\\d+\\)\\)");
 
+    /**
+     * Local ObjectMapper used to serialize the collected sockets to JSON.
+     */
     private static final ObjectMapper OM = new ObjectMapper();
 
     @Override
     public String collectTcpListenersJson() throws Exception {
-        // -l listening, -n numeric, -t tcp, -p process (capado sin permisos), -H sin header
+        // -l : listening
+        // -n : numeric
+        // -t : TCP
+        // -p : include process info (may be restricted without permissions)
+        // -H : no header
         var result = CommandRunner.run(List.of("ss", "-lntpHn"));
 
-        // Si ss devuelve warning/exit != 0, preferimos tratar stderr como diagnóstico
+        // Non-zero exit code usually means a real execution problem
+        // (missing binary, permissions, etc.)
         if (result.exitCode() != 0) {
             throw new RuntimeException(
                     "ss failed: " + result.exitCode() + "\n" + result.stderr()
@@ -32,10 +58,12 @@ public class LinuxSsCollector implements ListenerCollector {
         }
 
         List<ListeningSocket> rows = parseSsOutput(result.stdout());
-
         return OM.writeValueAsString(rows);
     }
 
+    /**
+     * Parses the output of the 'ss' command into domain objects.
+     */
     private List<ListeningSocket> parseSsOutput(String stdout) {
 
         List<ListeningSocket> out = new ArrayList<>();
@@ -46,16 +74,16 @@ public class LinuxSsCollector implements ListenerCollector {
             String line = raw.trim();
             if (line.isEmpty()) continue;
 
-            // Partimos por espacios pero "users:((" no nos molesta porque lo parseamos aparte.
-            // Estructura típica:
+            // Typical structure:
             // STATE REC-Q SEND-Q LOCAL_ADDRESS:PORT PEER_ADDRESS:PORT ...
             String[] parts = line.split("\\s+");
             if (parts.length < 5) {
-                // línea rara -> la ignoramos (no queremos petar por un caso marginal)
+                // Unexpected or malformed line: ignore to avoid crashing
                 continue;
             }
 
-            String local = parts[3]; // local address:port (o [::1]:631)
+            // LOCAL_ADDRESS:PORT
+            String local = parts[3];
             HostPort hp = parseHostPort(local);
             if (hp == null) continue;
 
@@ -63,7 +91,7 @@ public class LinuxSsCollector implements ListenerCollector {
             row.LocalAddress = hp.host;
             row.LocalPort = hp.port;
 
-            // Proceso (si lo hay y si tenemos permisos)
+            // Extract process info if available (may be missing without permissions)
             Matcher m = USERS_PATTERN.matcher(line);
             if (m.find()) {
                 row.ProcessName = m.group("name");
@@ -73,7 +101,7 @@ public class LinuxSsCollector implements ListenerCollector {
                 row.ProcessId = null;
             }
 
-            // Ruta ejecutable: sin sudo normalmente no puedes resolverla de forma fiable -> null
+            // Executable path is not reliably available without elevated privileges
             row.Path = null;
 
             out.add(row);
@@ -81,24 +109,27 @@ public class LinuxSsCollector implements ListenerCollector {
         return out;
     }
 
+    /**
+     * Parses host and port from the LOCAL_ADDRESS field of ss output.
+     *
+     * Examples:
+     *  127.0.0.53%lo:53
+     *  127.0.0.1:631
+     *  [::1]:631
+     *  [::ffff:127.0.0.1]:63342
+     *  *:22
+     */
     private HostPort parseHostPort(String local) {
-        // local puede ser:
-        // 127.0.0.53%lo:53
-        // 127.0.0.1:631
-        // [::1]:631
-        // [::ffff:127.0.0.1]:63342
-        // *:22 (a veces)
         if (local == null || local.isBlank()) return null;
 
         String s = local.trim();
 
-        // Quita corchetes si viene IPv6 entre []
-        // Ej: [::1]:631  -> ::1:631
+        // Remove IPv6 brackets if present: [::1]:631 -> ::1:631
         if (s.startsWith("[") && s.contains("]")) {
             s = s.substring(1, s.indexOf(']')) + s.substring(s.indexOf(']') + 1);
         }
 
-        // Ahora buscamos el ÚLTIMO ':' para separar puerto (IPv6 tiene muchos ':')
+        // Port is after the LAST ':' (IPv6 contains multiple ':')
         int idx = s.lastIndexOf(':');
         if (idx <= 0 || idx >= s.length() - 1) return null;
 
@@ -107,7 +138,7 @@ public class LinuxSsCollector implements ListenerCollector {
 
         String portStr = s.substring(idx + 1);
 
-        // host puede venir con %lo (scope). Lo dejamos tal cual para trazabilidad.
+        // The host part may include a scope (e.g., %lo); we keep it for traceability.
         Integer port = safeParseInt(portStr);
         if (port == null) return null;
 
@@ -117,6 +148,9 @@ public class LinuxSsCollector implements ListenerCollector {
         return hp;
     }
 
+    /**
+     * Safe integer parsing. Returns null on failure instead of throwing.
+     */
     private Integer safeParseInt(String s) {
         try {
             return Integer.parseInt(s);
@@ -125,10 +159,11 @@ public class LinuxSsCollector implements ListenerCollector {
         }
     }
 
+    /**
+     * Simple DTO for a host + port pair.
+     */
     private static class HostPort {
         String host;
         int port;
     }
-
-
 }
