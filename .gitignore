@@ -41,3 +41,4 @@ build/
 data/snapshots/
 data/diffs/
 *.log
+/data/
