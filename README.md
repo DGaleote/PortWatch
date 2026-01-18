@@ -61,7 +61,7 @@ Java 17 or higher
 ### Run
 
 ```bash
-java -jar PortWatch-1.0-SNAPSHOT-all.jar
+java -jar PortWatch.jar
 ```
 
 On the first run:
@@ -86,7 +86,7 @@ data/
 You can override the location with:
 
 ```bash
-PORTWATCH_DATA_DIR=/path/to/data java -jar PortWatch-1.0-SNAPSHOT-all.jar
+PORTWATCH_DATA_DIR=/path/to/data java -jar PortWatch.jar
 ```
 
 ---
