@@ -38,7 +38,5 @@ build/
 ### Mac OS ###
 .DS_Store
 
-data/snapshots/
-data/diffs/
 *.log
-/data/
+data/
