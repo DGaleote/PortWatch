@@ -7,7 +7,10 @@ import com.tss.portwatch.core.collector.LinuxSsCollector;
 import com.tss.portwatch.core.collector.ListenerCollector;
 import com.tss.portwatch.core.collector.MacOsLsofCollector;
 import com.tss.portwatch.core.collector.WindowsPowerShellCollector;
+import com.tss.portwatch.core.io.SnapshotIO;
 import com.tss.portwatch.core.os.OsDetector;
+
+import java.nio.file.Path;
 
 public class Main {
 
@@ -15,6 +18,11 @@ public class Main {
         // Parse flags (prints usage on error)
         CliOptions opt = parseArgs(args);
         if (opt == null) return;
+
+        if (opt.outputDir != null) {
+            SnapshotIO.setBaseDataDir(Path.of(opt.outputDir));
+        }
+
 
         ListenerCollector collector = wireCollector();
         PortWatchApp app = new PortWatchApp(new ObjectMapper(), collector);
@@ -25,6 +33,9 @@ public class Main {
     // ----------------- Parsing -----------------
 
     private static CliOptions parseArgs(String[] args) {
+        int outputDirCount = 0;
+        String outputDir = null;
+
         int snapshotCount = 0;
         int diffCount = 0;
         int outputCount = 0;
@@ -63,6 +74,21 @@ public class Main {
                 continue;
             }
 
+            if (arg.startsWith("--output-dir=")) {
+                outputDirCount++;
+
+                String value = arg.substring("--output-dir=".length()).trim();
+                if (value.isBlank()) {
+                    System.err.println("Invalid --output-dir value (empty).");
+                    printUsage();
+                    return null;
+                }
+
+                outputDir = value;
+                continue;
+            }
+
+
             System.err.println("Unknown flag: " + arg);
             printUsage();
             return null;
@@ -84,12 +110,19 @@ public class Main {
             return null;
         }
 
-        return new CliOptions(snapshotCount == 1, diffCount == 1, outputMode);
+        if (outputDirCount > 1) {
+            System.err.println("Duplicate flag: --output-dir");
+            printUsage();
+            return null;
+        }
+
+
+        return new CliOptions(snapshotCount == 1, diffCount == 1, outputMode, outputDir);
     }
 
     // ----------------- Collector wiring -----------------
 
-    private static ListenerCollector wireCollector() throws Exception {
+    private static ListenerCollector wireCollector() {
         var os = OsDetector.detect();
         return switch (os) {
             case WINDOWS -> new WindowsPowerShellCollector();
@@ -125,7 +158,7 @@ public class Main {
 
     private static void printUsage() {
         System.err.println("Usage:");
-        System.err.println("  portwatch [--snapshot | --diff] [--output=console|file]");
+        System.err.println("  portwatch [--snapshot | --diff] [--output=console|file] [--output-dir=<path>]");
         System.err.println("Notes:");
         System.err.println("  If no flags are provided, PortWatch runs in default mode.");
         System.err.println("  If --output is omitted, output is combined.");
@@ -134,14 +167,18 @@ public class Main {
     // ----------------- Options DTO -----------------
 
     private static final class CliOptions {
+        final String outputDir;
+
         final boolean snapshot;
         final boolean diff;
         final OutputMode outputMode; // null => implicit
 
-        private CliOptions(boolean snapshot, boolean diff, OutputMode outputMode) {
+        private CliOptions(boolean snapshot, boolean diff, OutputMode outputMode, String outputDir) {
             this.snapshot = snapshot;
             this.diff = diff;
             this.outputMode = outputMode;
+            this.outputDir = outputDir;
         }
+
     }
 }

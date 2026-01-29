@@ -8,6 +8,11 @@ import com.tss.portwatch.core.diff.SnapshotDiff;
 import com.tss.portwatch.core.io.SnapshotIO;
 import com.tss.portwatch.core.model.ListeningSocket;
 import com.tss.portwatch.report.DiffReporter;
+import com.tss.portwatch.core.model.PortWatchMetadata;
+import com.tss.portwatch.core.model.SnapshotFile;
+import com.tss.portwatch.core.model.DiffFile;
+
+import java.net.InetAddress;
 
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -21,10 +26,15 @@ public final class PortWatchApp {
     private final ObjectMapper om;
     private final ListenerCollector collector;
 
+    private final String machineId;
+
+
     public PortWatchApp(ObjectMapper om, ListenerCollector collector) {
         this.om = om;
         this.collector = collector;
+        this.machineId = resolveMachineId();
     }
+
 
     // ----------------- Public entry points -----------------
 
@@ -58,7 +68,7 @@ public final class PortWatchApp {
      * - FILE or implicit: write snapshot + diff
      */
     private RunResult executeDefaultPipeline(OutputMode mode) throws Exception {
-        Path snapshotsDir = SnapshotIO.snapshotsDir();
+        Path snapshotsDir = snapshotsDirForMachine();
         Path previousFile = SnapshotIO.latestSnapshot(snapshotsDir);
 
         if (previousFile == null) {
@@ -98,7 +108,7 @@ public final class PortWatchApp {
             return RunResult.snapshotConsoleOnly(json);
         }
 
-        Path snapshotsDir = SnapshotIO.snapshotsDir();
+        Path snapshotsDir = snapshotsDirForMachine();
         Path previousFile = SnapshotIO.latestSnapshot(snapshotsDir);
 
         String ts = nowTs();
@@ -120,7 +130,7 @@ public final class PortWatchApp {
      * - FILE or implicit: write snapshot + diff
      */
     private RunResult executeDiffOnlyPipeline(OutputMode mode) throws Exception {
-        Path snapshotsDir = SnapshotIO.snapshotsDir();
+        Path snapshotsDir = snapshotsDirForMachine();
         Path previousFile = SnapshotIO.latestSnapshot(snapshotsDir);
 
         if (previousFile == null) {
@@ -219,12 +229,30 @@ public final class PortWatchApp {
     }
 
     private Path writeSnapshot(Path snapshotsDir, String ts, List<ListeningSocket> current) throws Exception {
-        return SnapshotIO.write(snapshotsDir, "snapshot-" + ts + ".json", om, current);
+        PortWatchMetadata meta = new PortWatchMetadata(machineId, System.getProperty("os.name"), ts);
+        SnapshotFile payload = new SnapshotFile(meta, current);
+
+        return SnapshotIO.write(
+                snapshotsDir,
+                "snapshot-" + machineId + "-" + ts + ".json",
+                om,
+                payload
+        );
     }
 
     private Path writeDiff(String ts, SnapshotDiff diff) throws Exception {
-        return SnapshotIO.write(SnapshotIO.diffsDir(), "diff-" + ts + ".json", om, diff);
+        PortWatchMetadata meta = new PortWatchMetadata(machineId, System.getProperty("os.name"), ts);
+        DiffFile payload = new DiffFile(meta, diff);
+
+        return SnapshotIO.write(
+                diffsDirForMachine(),
+                "diff-" + machineId + "-" + ts + ".json",
+                om,
+                payload
+        );
     }
+
+
 
     // ----------------- Collection + parsing -----------------
 
@@ -243,6 +271,33 @@ public final class PortWatchApp {
     private String nowTs() {
         return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
     }
+
+    private String resolveMachineId() {
+        String host = null;
+
+        try {
+            host = InetAddress.getLocalHost().getHostName();
+        } catch (Exception ignored) {}
+
+        if (host == null || host.isBlank() || "localhost".equalsIgnoreCase(host)) {
+            host = System.getenv("COMPUTERNAME"); // Windows
+            if (host == null || host.isBlank()) host = System.getenv("HOSTNAME"); // Linux/macOS
+        }
+
+        if (host == null || host.isBlank()) host = "UNKNOWN";
+
+        return host.replaceAll("[^a-zA-Z0-9._-]", "_");
+    }
+
+    private Path snapshotsDirForMachine() {
+        return SnapshotIO.snapshotsDir().resolve(machineId);
+    }
+
+    private Path diffsDirForMachine() {
+        return SnapshotIO.diffsDir().resolve(machineId);
+    }
+
+
 
     // ----------------- Result carrier -----------------
 
