@@ -8,35 +8,46 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * macOS implementation of ListenerCollector.
- *
- * Uses the native 'lsof' command to list TCP sockets in LISTEN state:
- *   lsof -nP -iTCP -sTCP:LISTEN
- *
- * Output is parsed into a List<ListeningSocket> and serialized back to JSON.
- *
+ * macOS implementation of {@link ListenerCollector}.
+ * <p>
+ * Uses the native {@code lsof} command to list TCP sockets in LISTEN state:
+ * {@code lsof -nP -iTCP -sTCP:LISTEN}
+ * <p>
+ * The command output is parsed into {@link ListeningSocket} entries and then serialized
+ * back to JSON so the rest of the application can treat all collectors uniformly.
+ * <p>
  * Notes:
- *  - '-n' disables DNS resolution (faster and more deterministic)
- *  - '-P' shows numeric ports (avoids "http", "ssh", etc.)
- *  - We only target TCP LISTEN sockets (the ones relevant for "open ports")
+ * <ul>
+ *   <li>{@code -n} disables DNS resolution (faster and deterministic)</li>
+ *   <li>{@code -P} forces numeric ports (avoids "http", "ssh", etc.)</li>
+ *   <li>{@code -iTCP -sTCP:LISTEN} filters only TCP LISTEN sockets</li>
+ * </ul>
  */
 public class MacOsLsofCollector implements ListenerCollector {
 
     /**
      * Local ObjectMapper used to serialize the collected sockets to JSON.
-     * (PortWatchApp also has a mapper; here we keep this collector self-contained.)
+     * This keeps the collector self-contained.
      */
     private static final ObjectMapper OM = new ObjectMapper();
 
+    /**
+     * Executes {@code lsof} and returns a JSON array with the detected listeners.
+     *
+     * @return JSON array where each element matches the ListeningSocket structure
+     * @throws Exception if {@code lsof} fails or returns a non-zero exit code
+     */
     @Override
     public String collectTcpListenersJson() throws Exception {
-        // -n : no DNS
-        // -P : numeric ports
-        // -iTCP : TCP sockets
-        // -sTCP:LISTEN : only LISTEN state
+        /*
+         * -n : no DNS
+         * -P : numeric ports
+         * -iTCP : TCP sockets
+         * -sTCP:LISTEN : only LISTEN state
+         */
         var result = CommandRunner.run(List.of("lsof", "-nP", "-iTCP", "-sTCP:LISTEN"));
 
-        // Non-zero exit code means lsof failed (missing binary, permissions, etc.)
+        // Non-zero exit code indicates the command failed (missing binary, permissions, etc.).
         if (result.exitCode() != 0) {
             throw new RuntimeException("lsof failed: " + result.exitCode() + "\n" + result.stderr());
         }
@@ -47,15 +58,20 @@ public class MacOsLsofCollector implements ListenerCollector {
     }
 
     /**
-     * Parses 'lsof' output lines into ListeningSocket entries.
-     *
+     * Parses {@code lsof} output lines into {@link ListeningSocket} entries.
+     * <p>
      * Expected lsof columns (typical):
-     *   COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
-     *
-     * We only need:
-     *  - COMMAND (process name)
-     *  - PID
-     *  - NAME (host:port ... plus "(LISTEN)")
+     * {@code COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME}
+     * <p>
+     * Fields used:
+     * <ul>
+     *   <li>COMMAND (process name)</li>
+     *   <li>PID</li>
+     *   <li>NAME (host:port plus an optional "(LISTEN)" token)</li>
+     * </ul>
+     * <p>
+     * The parser is tolerant to spacing differences by splitting on whitespace and
+     * extracting the last tokens that represent the NAME field.
      */
     private List<ListeningSocket> parseLsof(String stdout) {
         List<ListeningSocket> out = new ArrayList<>();
@@ -68,34 +84,28 @@ public class MacOsLsofCollector implements ListenerCollector {
             String line = raw.trim();
             if (line.isEmpty()) continue;
 
-            // Skip the header line:
-            // "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME"
+            // Skip header line: "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME"
             if (first) {
                 first = false;
                 if (line.toUpperCase().startsWith("COMMAND ")) continue;
             }
 
-            // lsof aligns columns with spaces. The NAME field is at the end and, in LISTEN mode,
-            // typically ends with a separate "(LISTEN)" token.
-            //
             // Example:
             //   ControlCe  123 user  ...  TCP 127.0.0.1:631 (LISTEN)
-            //
-            // Splitting by whitespace is OK as long as we handle "(LISTEN)" properly.
             String[] parts = line.split("\\s+");
             if (parts.length < 2) continue;
 
             String command = parts[0];
             Integer pid = safeParseInt(parts[1]);
 
-            // IMPORTANT:
-            // In macOS 'lsof' output, "(LISTEN)" is usually a separate token.
-            // If we take the last token blindly, we'd capture "(LISTEN)" instead of "host:port"
-            // and end up parsing NOTHING (empty snapshot).
-            //
-            // Therefore:
-            //  - if the last token is "(LISTEN)", the host:port is the token right before it
-            //  - otherwise, we fallback to the last token (defensive)
+            /*
+             * In macOS lsof output, "(LISTEN)" is typically a separate token.
+             * If we took the last token blindly, we'd capture "(LISTEN)" instead of "host:port".
+             *
+             * Therefore:
+             *  - if last token is "(LISTEN)", host:port is the token before it
+             *  - otherwise, fallback to the last token (defensive)
+             */
             String name;
             if ("(LISTEN)".equals(parts[parts.length - 1])) {
                 name = parts[parts.length - 2];
@@ -103,19 +113,16 @@ public class MacOsLsofCollector implements ListenerCollector {
                 name = parts[parts.length - 1];
             }
 
-            // Convert the NAME field into a normalized host + numeric port.
             HostPort hp = parseHostPortFromName(name);
             if (hp == null) continue;
 
-            // Build the ListeningSocket domain record.
             ListeningSocket row = new ListeningSocket();
             row.LocalAddress = hp.host;
             row.LocalPort = hp.port;
             row.ProcessName = command;
             row.ProcessId = pid;
 
-            // Path on macOS could be obtained via ps/proc queries, but it's not required
-            // for the current practice goal (port/process correlation).
+            // Path is not collected on macOS in this implementation.
             row.Path = null;
 
             out.add(row);
@@ -126,40 +133,44 @@ public class MacOsLsofCollector implements ListenerCollector {
 
     /**
      * Extracts host and port from the last part of the lsof NAME column.
-     *
+     * <p>
      * Typical inputs:
-     *   "*:631"
-     *   "127.0.0.1:8080"
-     *   "[::1]:631"
+     * <ul>
+     *   <li>{@code *:631}</li>
+     *   <li>{@code 127.0.0.1:8080}</li>
+     *   <li>{@code [::1]:631}</li>
+     * </ul>
+     * <p>
+     * Normalizations:
+     * <ul>
+     *   <li>{@code *} becomes {@code 0.0.0.0} (all interfaces)</li>
+     *   <li>IPv6 brackets are removed before parsing</li>
+     * </ul>
      *
-     * This method normalizes:
-     *  - "*" -> "0.0.0.0"
-     *  - "[::1]:631" -> "::1:631" (brackets removed before parsing)
+     * @param name extracted NAME token from lsof output
+     * @return host/port pair, or null if parsing fails
      */
     private HostPort parseHostPortFromName(String name) {
         if (name == null || name.isBlank()) return null;
 
         String s = name.trim();
 
-        // Remove trailing "(LISTEN)" if it somehow arrives attached to the string.
-        // (Normally we already stripped it by choosing the token before "(LISTEN)".)
+        // Defensive: remove trailing "(LISTEN)" if it arrives attached.
         if (s.endsWith("(LISTEN)")) {
             s = s.substring(0, s.length() - "(LISTEN)".length()).trim();
         }
 
-        // Defensive: if a "->" appears, keep only the left side (local endpoint).
-        // In theory, LISTEN entries should not contain "->", but it can appear
-        // when commands/filters change in the future.
+        // Defensive: if "->" appears, keep only the local endpoint.
         int arrow = s.indexOf("->");
         if (arrow >= 0) s = s.substring(0, arrow).trim();
 
-        // IPv6 is usually displayed in brackets: [::1]:631
-        // Remove brackets so we can treat it uniformly.
+        // IPv6 is usually displayed as [::1]:631. Remove brackets.
         if (s.startsWith("[") && s.contains("]")) {
-            s = s.substring(1, s.indexOf(']')) + s.substring(s.indexOf(']') + 1);
+            int end = s.indexOf(']');
+            s = s.substring(1, end) + s.substring(end + 1);
         }
 
-        // Port is the substring after the last ':'
+        // Port is substring after the last ':'.
         int idx = s.lastIndexOf(':');
         if (idx <= 0 || idx >= s.length() - 1) return null;
 

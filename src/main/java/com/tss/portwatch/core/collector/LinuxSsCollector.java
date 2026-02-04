@@ -11,26 +11,30 @@ import java.util.regex.Pattern;
 
 /**
  * Linux implementation of ListenerCollector.
- *
+ * <p>
  * Uses the native 'ss' tool to list TCP listening sockets:
- *   ss -lntpHn
- *
+ * ss -lntpHn
+ * <p>
  * Where:
- *  -l : listening sockets
- *  -n : numeric addresses and ports
- *  -t : TCP only
- *  -p : process info (may be restricted without root)
- *  -H : no header
+ * -l : listening sockets
+ * -n : numeric addresses and ports
+ * -t : TCP only
+ * -p : process info (may be restricted without root/capabilities)
+ * -H : no header
+ * <p>
+ * Note: on systems where process inspection is restricted, 'ss' may omit the "users:(...)" block.
+ * In that case, ProcessName and ProcessId will be null.
  */
 public class LinuxSsCollector implements ListenerCollector {
 
     /**
      * Example ss output lines:
-     *
+     * <p>
      * LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:* users:(("systemd-resolve",pid=725,fd=13))
      * LISTEN 0 4096 [::1]:631 [::]:* users:(("cupsd",pid=1234,fd=7))
-     *
+     * <p>
      * This regex extracts process name and pid from the "users:(())" block.
+     * If multiple processes are reported, only the first match is used.
      */
     private static final Pattern USERS_PATTERN =
             Pattern.compile("users:\\(\\(\"(?<name>[^\"]+)\",pid=(?<pid>\\d+),fd=\\d+\\)\\)");
@@ -63,6 +67,11 @@ public class LinuxSsCollector implements ListenerCollector {
 
     /**
      * Parses the output of the 'ss' command into domain objects.
+     * <p>
+     * Expected columns for "ss -lntpHn" (typical):
+     * STATE REC-Q SEND-Q LOCAL_ADDRESS:PORT PEER_ADDRESS:PORT ...
+     * <p>
+     * LOCAL_ADDRESS:PORT is taken from parts[3].
      */
     private List<ListeningSocket> parseSsOutput(String stdout) {
 
@@ -111,13 +120,15 @@ public class LinuxSsCollector implements ListenerCollector {
 
     /**
      * Parses host and port from the LOCAL_ADDRESS field of ss output.
-     *
+     * <p>
      * Examples:
-     *  127.0.0.53%lo:53
-     *  127.0.0.1:631
-     *  [::1]:631
-     *  [::ffff:127.0.0.1]:63342
-     *  *:22
+     * 127.0.0.53%lo:53
+     * 127.0.0.1:631
+     * [::1]:631
+     * [::ffff:127.0.0.1]:63342
+     * *:22
+     * <p>
+     * Note: the host part may include a scope (e.g., "%lo"); it is preserved for traceability.
      */
     private HostPort parseHostPort(String local) {
         if (local == null || local.isBlank()) return null;
@@ -138,7 +149,6 @@ public class LinuxSsCollector implements ListenerCollector {
 
         String portStr = s.substring(idx + 1);
 
-        // The host part may include a scope (e.g., %lo); we keep it for traceability.
         Integer port = safeParseInt(portStr);
         if (port == null) return null;
 

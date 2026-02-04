@@ -6,30 +6,49 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 /**
  * Domain model representing a single TCP listening socket.
- *
- * This class is used as:
- *  - The in-memory representation of an open listening port
- *  - The JSON structure written to snapshot files
- *  - The unit of comparison for diff generation
- *
- * All fields are public to keep JSON serialization simple and explicit.
+ * <p>
+ * This class is the canonical representation of an open listening endpoint
+ * inside PortWatch. It is used consistently as:
+ * <ul>
+ *   <li>In-memory representation of collected sockets</li>
+ *   <li>JSON payload for snapshot persistence</li>
+ *   <li>Input unit for snapshot diff computation</li>
+ * </ul>
+ * <p>
+ * Fields are intentionally public to keep JSON serialization and
+ * deserialization explicit and predictable across platforms.
+ * <p>
+ * This class is not immutable by design, as it acts primarily as a
+ * data-transfer object populated by OS-specific collectors.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class ListeningSocket {
 
-    /** Local IP address the socket is bound to (e.g. 127.0.0.1, 0.0.0.0, ::1). */
+    /**
+     * Local IP address the socket is bound to (e.g. 127.0.0.1, 0.0.0.0, ::1).
+     */
     public String LocalAddress;
 
-    /** Local TCP port (e.g. 80, 443, 8080). */
+    /**
+     * Local TCP port number (e.g. 80, 443, 8080).
+     */
     public Integer LocalPort;
 
-    /** Process ID that owns this socket (may be null on some platforms). */
+    /**
+     * Process ID owning this socket.
+     * May be null on platforms where the PID cannot be resolved.
+     */
     public Integer ProcessId;
 
-    /** Name of the owning process (e.g. "java", "nginx", "cupsd"). */
+    /**
+     * Name of the owning process (e.g. "java", "nginx", "cupsd").
+     */
     public String ProcessName;
 
-    /** Full executable path, when available (mostly on Windows). */
+    /**
+     * Full executable path of the owning process, when available.
+     * This field is typically populated on Windows systems.
+     */
     public String Path;
 
     /**
@@ -39,12 +58,18 @@ public class ListeningSocket {
     }
 
     /**
-     * Two ListeningSocket objects are considered equal if they represent
-     * the same listening endpoint and the same owning process.
-     *
-     * This definition is critical for snapshot diffing:
-     * it determines whether a socket is considered "the same",
-     * "new", or "removed".
+     * Equality definition for ListeningSocket.
+     * <p>
+     * Two instances are considered equal if they represent the same
+     * listening endpoint owned by the same process.
+     * <p>
+     * This definition is intentionally strict and includes process-related
+     * attributes, as it is used only for snapshot-level comparisons,
+     * not for socket identity matching (which is handled separately
+     * by SocketKey).
+     * <p>
+     * The distinction between "socket identity" and "socket state"
+     * is essential for correctly detecting changed processes.
      */
     @Override
     public boolean equals(Object o) {
@@ -59,8 +84,8 @@ public class ListeningSocket {
     }
 
     /**
-     * Hash code consistent with equals(), so this object can be safely
-     * used in hash-based collections (sets, maps) during diff computation.
+     * Hash code consistent with equals(), allowing this object to be safely
+     * used in hash-based collections during diff computation.
      */
     @Override
     public int hashCode() {

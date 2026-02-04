@@ -6,66 +6,166 @@ import com.tss.portwatch.core.collector.ListenerCollector;
 import com.tss.portwatch.core.diff.SnapshotComparator;
 import com.tss.portwatch.core.diff.SnapshotDiff;
 import com.tss.portwatch.core.io.SnapshotIO;
+import com.tss.portwatch.core.model.DiffFile;
 import com.tss.portwatch.core.model.ListeningSocket;
-import com.tss.portwatch.report.DiffReporter;
 import com.tss.portwatch.core.model.PortWatchMetadata;
 import com.tss.portwatch.core.model.SnapshotFile;
-import com.tss.portwatch.core.model.DiffFile;
+import com.tss.portwatch.report.DiffHtmlReportGenerator;
+import com.tss.portwatch.report.DiffReportGenerator;
+import com.tss.portwatch.report.DiffReporter;
 
 import java.net.InetAddress;
-
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 
+/**
+ * Core application class for PortWatch.
+ * <p>
+ * Responsibilities:
+ * - Orchestrate execution modes (default, snapshot-only, diff-only)
+ * - Coordinate data collection, comparison and persistence
+ * - Control output rendering (console / file / implicit)
+ * - Trigger report generation (Markdown / HTML) when requested
+ * <p>
+ * This class contains no OS-specific logic and no CLI parsing logic.
+ */
 public final class PortWatchApp {
 
+    /**
+     * Output behavior selector.
+     * CONSOLE: no disk persistence (except baseline if missing)
+     * FILE: disk persistence only
+     */
     public enum OutputMode {CONSOLE, FILE}
 
     private final ObjectMapper om;
     private final ListenerCollector collector;
-
     private final String machineId;
 
-
+    /**
+     * Creates a PortWatch application instance.
+     *
+     * @param om        Jackson ObjectMapper used for JSON serialization
+     * @param collector OS-specific listener collector
+     */
     public PortWatchApp(ObjectMapper om, ListenerCollector collector) {
         this.om = om;
         this.collector = collector;
         this.machineId = resolveMachineId();
     }
 
+    // -------------------------------------------------------------------------
+    // Public entry points (invoked from CLI dispatcher)
+    // -------------------------------------------------------------------------
 
-    // ----------------- Public entry points -----------------
-
+    /**
+     * Default execution mode.
+     * - If no baseline exists, creates one and stops
+     * - Otherwise computes a diff
+     */
     public void runDefault(OutputMode mode) throws Exception {
         RunResult r = executeDefaultPipeline(mode);
         render(mode, r);
     }
 
+    /**
+     * Snapshot-only execution mode.
+     */
     public void runSnapshotOnly(OutputMode mode) throws Exception {
         RunResult r = executeSnapshotOnlyPipeline(mode);
         render(mode, r);
     }
 
-    public void runDiffOnly(OutputMode mode) throws Exception {
+    /**
+     * Diff-only execution mode.
+     * Optionally generates a report if requested.
+     */
+    public void runDiffOnly(OutputMode mode, String reportFormat) throws Exception {
+
         RunResult r = executeDiffOnlyPipeline(mode);
         render(mode, r);
+
+        // Report generation is only allowed if a persisted diff exists
+        if (reportFormat != null) {
+            if (r.diffPayload == null) {
+                throw new IllegalStateException(
+                        "No diff available for report generation (baseline created or console-only run)."
+                );
+            }
+
+            if ("md".equalsIgnoreCase(reportFormat)) {
+                generateMarkdownReport(r.diffPayload);
+            } else if ("html".equalsIgnoreCase(reportFormat)) {
+                generateHtmlReport(r.diffPayload);
+            }
+        }
     }
 
-    // ----------------- Pipelines (work, no output) -----------------
+    // -------------------------------------------------------------------------
+    // Report generation
+    // -------------------------------------------------------------------------
 
+    /**
+     * Generates an HTML report from a diff payload.
+     */
+    private void generateHtmlReport(DiffFile diffFile) throws Exception {
+        String machineId = diffFile.metadata().machineId();
+        String timestamp = diffFile.metadata().timestamp();
+
+        String html = DiffHtmlReportGenerator.generateHtml(diffFile);
+
+        Path dir = SnapshotIO.baseDataDir()
+                .resolve("reports")
+                .resolve(machineId);
+
+        Files.createDirectories(dir);
+
+        Path out = dir.resolve("report-" + machineId + "-" + timestamp + ".html");
+        Files.writeString(out, html);
+
+        System.out.println("Report generated: " + out);
+    }
+
+    /**
+     * Generates a Markdown report from a diff payload.
+     */
+    private void generateMarkdownReport(DiffFile diffFile) throws Exception {
+        String machineId = diffFile.metadata().machineId();
+        String timestamp = diffFile.metadata().timestamp();
+
+        String md = DiffReportGenerator.generateMarkdown(diffFile, null);
+
+        Path dir = SnapshotIO.baseDataDir()
+                .resolve("reports")
+                .resolve(machineId);
+
+        Files.createDirectories(dir);
+
+        Path out = dir.resolve("report-" + machineId + "-" + timestamp + ".md");
+        Files.writeString(out, md);
+
+        System.out.println("Report generated: " + out.toAbsolutePath());
+    }
+
+    // -------------------------------------------------------------------------
+    // Pipelines (pure work, no rendering)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Determines whether results should be persisted to disk.
+     * CONSOLE mode suppresses persistence except for baseline creation.
+     */
     private boolean shouldPersist(OutputMode mode) {
-        // console = sigiloso (no escribe a disco). Si no hay baseline, se crea baseline igualmente.
         return mode != OutputMode.CONSOLE;
     }
 
     /**
-     * Default:
-     * - If no baseline: create baseline snapshot and stop (no diff)
-     * - Else:
-     * - CONSOLE: compute diff in memory (no disk writes)
-     * - FILE or implicit: write snapshot + diff
+     * Default pipeline:
+     * - Creates baseline if missing
+     * - Otherwise computes diff
      */
     private RunResult executeDefaultPipeline(OutputMode mode) throws Exception {
         Path snapshotsDir = snapshotsDirForMachine();
@@ -86,19 +186,18 @@ public final class PortWatchApp {
 
         String ts = nowTs();
         Path snapshotFile = writeSnapshot(snapshotsDir, ts, current);
-        Path diffFile = writeDiff(ts, diff);
-        return RunResult.withDiff(previousFile, snapshotFile, diffFile, diff);
+        DiffFile diffPayload = buildDiffPayload(ts, diff);
+        Path diffFile = writeDiffFile(ts, diffPayload);
+
+        return RunResult.withDiff(previousFile, snapshotFile, diffFile, diff, diffPayload);
     }
 
     /**
-     * Snapshot-only:
-     * - CONSOLE: print snapshot JSON to stdout (no disk writes)
-     * - FILE or implicit: write snapshot; implicit also prints JSON
+     * Snapshot-only pipeline.
      */
     private RunResult executeSnapshotOnlyPipeline(OutputMode mode) throws Exception {
         List<ListeningSocket> current = collectCurrent();
 
-        // JSON is needed for CONSOLE and implicit mode
         String json = null;
         if (mode == null || mode == OutputMode.CONSOLE) {
             json = om.writerWithDefaultPrettyPrinter().writeValueAsString(current);
@@ -115,7 +214,6 @@ public final class PortWatchApp {
         Path snapshotFile = writeSnapshot(snapshotsDir, ts, current);
 
         if (previousFile == null) {
-            // baseline snapshot (snapshot-only: no "run again" guidance)
             return RunResult.baselineOnly(snapshotFile, false, json);
         }
 
@@ -123,11 +221,7 @@ public final class PortWatchApp {
     }
 
     /**
-     * Diff-only:
-     * - If no baseline: create baseline snapshot and stop
-     * - Else:
-     * - CONSOLE: compute diff in memory (no disk writes)
-     * - FILE or implicit: write snapshot + diff
+     * Diff-only pipeline.
      */
     private RunResult executeDiffOnlyPipeline(OutputMode mode) throws Exception {
         Path snapshotsDir = snapshotsDirForMachine();
@@ -148,19 +242,19 @@ public final class PortWatchApp {
 
         String ts = nowTs();
         Path snapshotFile = writeSnapshot(snapshotsDir, ts, current);
-        Path diffFile = writeDiff(ts, diff);
-        return RunResult.withDiff(previousFile, snapshotFile, diffFile, diff);
+        DiffFile diffPayload = buildDiffPayload(ts, diff);
+        Path diffFile = writeDiffFile(ts, diffPayload);
+
+        return RunResult.withDiff(previousFile, snapshotFile, diffFile, diff, diffPayload);
     }
 
-    // ----------------- Render (output) -----------------
+    // -------------------------------------------------------------------------
+    // Rendering (output only)
+    // -------------------------------------------------------------------------
 
     private void render(OutputMode mode, RunResult r) {
-
-        // Baseline: always minimal output (paths + guidance if applies)
         if (r.baselineCreated) {
             renderFile(mode, r);
-
-            // snapshot-only implicit mode prints JSON even if baseline just created
             if (mode == null && r.snapshotJson != null) {
                 System.out.println(r.snapshotJson);
             }
@@ -177,7 +271,6 @@ public final class PortWatchApp {
             return;
         }
 
-        // implicit (no --output): combined
         renderFile(mode, r);
         renderConsole(r);
     }
@@ -190,7 +283,6 @@ public final class PortWatchApp {
             return;
         }
 
-        // In FILE mode we print "Previous:". In implicit mode, console will also print it.
         boolean implicitWillAlsoPrintConsole = (mode == null);
         if (r.previousFile != null && !implicitWillAlsoPrintConsole) {
             System.out.println("Previous: " + r.previousFile.toAbsolutePath());
@@ -205,7 +297,6 @@ public final class PortWatchApp {
     }
 
     private void renderConsole(RunResult r) {
-        // snapshot-only console/implicit: print JSON
         if (r.snapshotJson != null) {
             System.out.println(r.snapshotJson);
             return;
@@ -220,7 +311,9 @@ public final class PortWatchApp {
         DiffReporter.printConsole(r.diff, 10);
     }
 
-    // ----------------- Baseline + persistence helpers -----------------
+    // -------------------------------------------------------------------------
+    // Persistence helpers
+    // -------------------------------------------------------------------------
 
     private Path createBaseline(Path snapshotsDir) throws Exception {
         String ts = nowTs();
@@ -240,10 +333,12 @@ public final class PortWatchApp {
         );
     }
 
-    private Path writeDiff(String ts, SnapshotDiff diff) throws Exception {
+    private DiffFile buildDiffPayload(String ts, SnapshotDiff diff) {
         PortWatchMetadata meta = new PortWatchMetadata(machineId, System.getProperty("os.name"), ts);
-        DiffFile payload = new DiffFile(meta, diff);
+        return new DiffFile(meta, diff);
+    }
 
+    private Path writeDiffFile(String ts, DiffFile payload) throws Exception {
         return SnapshotIO.write(
                 diffsDirForMachine(),
                 "diff-" + machineId + "-" + ts + ".json",
@@ -252,9 +347,9 @@ public final class PortWatchApp {
         );
     }
 
-
-
-    // ----------------- Collection + parsing -----------------
+    // -------------------------------------------------------------------------
+    // Collection and parsing
+    // -------------------------------------------------------------------------
 
     private List<ListeningSocket> collectCurrent() throws Exception {
         String json = collector.collectTcpListenersJson();
@@ -277,15 +372,15 @@ public final class PortWatchApp {
 
         try {
             host = InetAddress.getLocalHost().getHostName();
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
 
         if (host == null || host.isBlank() || "localhost".equalsIgnoreCase(host)) {
-            host = System.getenv("COMPUTERNAME"); // Windows
-            if (host == null || host.isBlank()) host = System.getenv("HOSTNAME"); // Linux/macOS
+            host = System.getenv("COMPUTERNAME");
+            if (host == null || host.isBlank()) host = System.getenv("HOSTNAME");
         }
 
         if (host == null || host.isBlank()) host = "UNKNOWN";
-
         return host.replaceAll("[^a-zA-Z0-9._-]", "_");
     }
 
@@ -297,20 +392,24 @@ public final class PortWatchApp {
         return SnapshotIO.diffsDir().resolve(machineId);
     }
 
+    // -------------------------------------------------------------------------
+    // Result carrier
+    // -------------------------------------------------------------------------
 
-
-    // ----------------- Result carrier -----------------
-
+    /**
+     * Immutable carrier for pipeline execution results.
+     * Encapsulates all data required for rendering and report generation.
+     */
     private static final class RunResult {
         final boolean baselineCreated;
         final boolean suggestDiff;
 
+        final DiffFile diffPayload;
         final Path baselineFile;
         final Path previousFile;
         final Path snapshotFile;
         final Path diffFile;
         final SnapshotDiff diff;
-
         final String snapshotJson;
 
         private RunResult(
@@ -321,7 +420,8 @@ public final class PortWatchApp {
                 Path snapshotFile,
                 Path diffFile,
                 SnapshotDiff diff,
-                String snapshotJson
+                String snapshotJson,
+                DiffFile diffPayload
         ) {
             this.baselineCreated = baselineCreated;
             this.suggestDiff = suggestDiff;
@@ -331,30 +431,32 @@ public final class PortWatchApp {
             this.diffFile = diffFile;
             this.diff = diff;
             this.snapshotJson = snapshotJson;
+            this.diffPayload = diffPayload;
         }
 
         static RunResult baselineOnly(Path baselineFile, boolean suggestDiff) {
-            return new RunResult(true, suggestDiff, baselineFile, null, null, null, null, null);
+            return new RunResult(true, suggestDiff, baselineFile, null, null, null, null, null, null);
         }
 
         static RunResult baselineOnly(Path baselineFile, boolean suggestDiff, String snapshotJson) {
-            return new RunResult(true, suggestDiff, baselineFile, null, null, null, null, snapshotJson);
+            return new RunResult(true, suggestDiff, baselineFile, null, null, null, null, snapshotJson, null);
         }
 
         static RunResult snapshotOnly(Path snapshotFile, String snapshotJson) {
-            return new RunResult(false, false, null, null, snapshotFile, null, null, snapshotJson);
+            return new RunResult(false, false, null, null, snapshotFile, null, null, snapshotJson, null);
         }
 
-        static RunResult withDiff(Path previousFile, Path snapshotFile, Path diffFile, SnapshotDiff diff) {
-            return new RunResult(false, false, null, previousFile, snapshotFile, diffFile, diff, null);
+        static RunResult withDiff(Path previousFile, Path snapshotFile, Path diffFile,
+                                  SnapshotDiff diff, DiffFile diffPayload) {
+            return new RunResult(false, false, null, previousFile, snapshotFile, diffFile, diff, null, diffPayload);
         }
 
         static RunResult diffOnlyInMemory(Path previousFile, SnapshotDiff diff) {
-            return new RunResult(false, false, null, previousFile, null, null, diff, null);
+            return new RunResult(false, false, null, previousFile, null, null, diff, null, null);
         }
 
         static RunResult snapshotConsoleOnly(String snapshotJson) {
-            return new RunResult(false, false, null, null, null, null, null, snapshotJson);
+            return new RunResult(false, false, null, null, null, null, null, snapshotJson, null);
         }
     }
 }

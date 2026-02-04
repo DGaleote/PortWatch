@@ -1,26 +1,43 @@
 package com.tss.portwatch.report;
 
-import com.tss.portwatch.core.model.ListeningSocket;
 import com.tss.portwatch.core.diff.SnapshotDiff;
+import com.tss.portwatch.core.model.ListeningSocket;
 
 /**
- * Renders a SnapshotDiff to the console in a human-readable format.
- *
- * This class is responsible only for presentation.
- * It does not perform any diff logic and does not modify data.
+ * Console renderer for {@link SnapshotDiff}.
+ * <p>
+ * This class is responsible exclusively for presenting diff information
+ * in a human-readable format on standard output.
+ * <p>
+ * It does not:
+ * - perform any diff computation,
+ * - modify domain data,
+ * - persist any information.
+ * <p>
+ * Its sole responsibility is formatting and output.
  */
 public final class DiffReporter {
 
+    /**
+     * Utility class constructor.
+     * Prevents instantiation.
+     */
     private DiffReporter() {
         // Utility class: no instances allowed.
     }
 
     /**
-     * Prints the diff to the console, grouping results by category
-     * (added, removed, changed) and limiting the number of entries
-     * shown per section to keep output readable.
+     * Prints a diff summary to the console.
+     * <p>
+     * Results are grouped by category (added, removed, changed) and
+     * each section is limited to a maximum number of entries to avoid
+     * excessive console output.
+     *
+     * @param diff            the computed snapshot diff
+     * @param limitPerSection maximum number of entries printed per section
      */
     public static void printConsole(SnapshotDiff diff, int limitPerSection) {
+
         if (!diff.added().isEmpty()) {
             System.out.println("\n=== ADDED ===");
             printAdded(diff, limitPerSection);
@@ -49,7 +66,7 @@ public final class DiffReporter {
             if (shown >= limit) break;
         }
 
-        // Inform the user if not all entries were printed.
+        // Inform if not all entries were printed.
         int remaining = diff.added().size() - shown;
         if (remaining > 0) {
             System.out.println("    ... (" + remaining + " more added)");
@@ -75,7 +92,7 @@ public final class DiffReporter {
     }
 
     /**
-     * Prints sockets that stayed on the same address:port
+     * Prints sockets that remained bound to the same address and port
      * but changed their owning process.
      */
     private static void printChanged(SnapshotDiff diff, int limit) {
@@ -101,7 +118,8 @@ public final class DiffReporter {
     }
 
     /**
-     * Formats a ListeningSocket into a compact one-line representation.
+     * Formats a {@link ListeningSocket} into a compact single-line string
+     * suitable for console output.
      */
     private static String formatSocket(ListeningSocket s) {
         String addrPort = safe(s.LocalAddress) + ":" + s.LocalPort;
@@ -111,7 +129,8 @@ public final class DiffReporter {
     }
 
     /**
-     * Replaces null or blank strings with "?" to keep console output readable.
+     * Replaces null or blank values with a placeholder to keep
+     * console output readable and consistent.
      */
     private static String safe(String v) {
         return (v == null || v.isBlank()) ? "?" : v;
